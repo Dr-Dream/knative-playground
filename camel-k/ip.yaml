@@ -1,0 +1,26 @@
+
+apiVersion: camel.apache.org/v1
+kind: IntegrationPlatform
+metadata:
+  name: camel-k
+  namespace: camel-k-playground
+spec:
+  cluster: kubernetes
+  build:
+    maxRunningBuilds: 2
+    registry:
+      address: k3d-registry.localhost:5000
+      insecure: true
+    buildConfiguration:
+      strategy: routine
+      requestCPU: "4"
+      requestMemory: 4Gi
+      limitCPU: "8"
+      limitMemory: 8Gi
+  traits:
+    knative:
+      enabled: true
+      auto: true
+    camel:
+      runtimeProvider: plain-quarkus
+      runtimeVersion: 3.36.3

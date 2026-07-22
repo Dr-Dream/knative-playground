@@ -1,0 +1,28 @@
+apiVersion: operator.knative.dev/v1beta1
+kind: KnativeServing
+metadata:
+  name: knative-serving
+  namespace: knative-serving
+spec:
+  ingress:
+    istio:
+      enabled: true
+      knative-local-gateway:
+        selector:
+          istio: knative-istio-gateway
+      knative-ingress-gateway:
+        selector:
+          istio: knative-istio-gateway
+  config:
+    domain:
+      kn.local: ""
+    istio:
+      local-gateways: |
+        - name: knative-local-gateway
+          namespace: knative-serving
+          service: knative-istio-gateway.istio-gateway.svc.cluster.local
+      external-gateways: |
+        - name: knative-ingress-gateway
+          namespace: knative-serving
+          service: knative-istio-gateway.istio-gateway.svc.cluster.local
+

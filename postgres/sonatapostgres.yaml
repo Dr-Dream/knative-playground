@@ -1,0 +1,45 @@
+kind: "postgresql"
+apiVersion: "acid.zalan.do/v1"
+
+metadata:
+  name: "sonataflow"
+  namespace: "postgres"
+  labels:
+    team: acid
+
+spec:
+  teamId: "acid"
+  numberOfInstances: 2
+  enableMasterLoadBalancer: false
+  enableReplicaLoadBalancer: false
+  enableConnectionPooler: true
+  enableReplicaConnectionPooler: true
+  enableMasterPoolerLoadBalancer: false
+  enableReplicaPoolerLoadBalancer: false
+  postgresql:
+    version: "17"
+  maintenanceWindows:
+  volume:
+    size: "10Gi"
+  users:
+    postgres:
+      - superuser
+      - createdb
+  preparedDatabases:
+    sonataflow:
+      defaultUsers: true
+  allowedSourceRanges:
+  # IP ranges to access your cluster go here
+  patroni:
+    failsafe_mode: true
+  connectionPooler:
+    numberOfInstances: 2
+    mode: "transaction"
+    maxDBConnections: 5
+  resources:
+    requests:
+      cpu: 100m
+      memory: 100Mi
+    limits:
+      cpu: 500m
+      memory: 500Mi
