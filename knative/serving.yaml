@@ -12,8 +12,18 @@ spec:
           istio: knative-istio-gateway
       knative-ingress-gateway:
         selector:
-          istio: knative-istio-gateway
+          istio: knative-istio-gatewayGjcvjnh
   config:
+    observability:
+      metrics-protocol: grpc
+      metrics-endpoint: http://otel-telemetry-collector.observability.svc.cluster.local:4317/v1/metrics
+      metrics-export-interval: 60s
+      request-metrics-protocol: grpc
+      request-metrics-endpoint: http://otel-telemetry-collector.observability.svc.cluster.local:4317/v1/metrics
+      request-metrics-export-interval: 60s
+      tracing-protocol: grpc
+      tracing-endpoint: http://otel-telemetry-collector.observability.svc.cluster.local:4317/v1/traces
+      tracing-sampling-rate: "1"
     domain:
       kn.local: ""
     istio:

@@ -9,6 +9,13 @@ spec:
     - URL: https://github.com/knative-extensions/eventing-kafka-broker/releases/download/knative-v1.22.1/eventing-kafka-broker.yaml
     - URL: https://github.com/knative-extensions/eventing-kafka-broker/releases/download/knative-v1.22.1/eventing-kafka-channel.yaml
   config:
+    observability:
+      metrics-protocol: grpc
+      metrics-endpoint: http://otel-telemetry-collector.observability.svc.cluster.local:4317/v1/metrics
+      metrics-export-interval: 60s
+      tracing-protocol: grpc
+      tracing-endpoint: http://otel-telemetry-collector.observability.svc.cluster.local:4317/v1/traces
+      tracing-sampling-rate: "1"
     config-br-default-channel:
       channel-template-spec: |
         apiVersion: messaging.knative.dev/v1beta1
