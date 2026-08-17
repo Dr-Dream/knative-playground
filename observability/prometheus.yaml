@@ -1,0 +1,8 @@
+server:
+  retention: 15d
+  retentionSize: 6GB
+  persistentVolume:
+    size: 8Gi
+  extraArgs:
+    web.enable-remote-write-receiver: ""
+    enable-feature: exemplar-storage

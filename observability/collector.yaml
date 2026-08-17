@@ -1,0 +1,435 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: otel-collector
+  namespace: observability
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: otel-collector-telemetry
+rules:
+  # Required by the k8sattributes processor to enrich logs and traces,
+  # and to discover pods for metrics.
+  - apiGroups: [""]
+    resources:
+      - pods
+      - namespaces
+      - nodes
+      - services
+      - endpoints
+    verbs: ["get", "list", "watch"]
+
+  # Required by k8sattributes to resolve Deployment names through ReplicaSets.
+  - apiGroups: ["apps"]
+    resources:
+      - replicasets
+    verbs: ["get", "list", "watch"]
+
+  # Legacy API group, kept for older OTel versions.
+  - apiGroups: ["extensions"]
+    resources:
+      - replicasets
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: otel-collector-telemetry-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: otel-collector-telemetry
+subjects:
+  - kind: ServiceAccount
+    name: otel-collector
+    namespace: observability
+---
+apiVersion: opentelemetry.io/v1beta1
+kind: OpenTelemetryCollector
+metadata:
+  name: otel-telemetry
+  namespace: observability
+spec:
+  image: otel/opentelemetry-collector-contrib:latest
+  mode: daemonset
+  serviceAccount: otel-collector
+
+  securityContext:
+    runAsUser: 0
+    privileged: true
+
+  tolerations:
+    - key: "node-role.kubernetes.io/control-plane"
+      operator: "Exists"
+      effect: "NoSchedule"
+    - key: "node-role.kubernetes.io/master"
+      operator: "Exists"
+      effect: "NoSchedule"
+
+  volumes:
+    - name: varlogpods
+      hostPath:
+        path: /var/log/pods
+
+  volumeMounts:
+    - name: varlogpods
+      mountPath: /var/log/pods
+      readOnly: true
+
+  config:
+    # ============================================================
+    # RECEIVERS
+    # ============================================================
+    receivers:
+      # ----------------------------------------------------------
+      # OTLP — traces and metrics pushed by applications
+      # ----------------------------------------------------------
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+
+      # ----------------------------------------------------------
+      # Kubernetes container logs
+      # ----------------------------------------------------------
+      file_log:
+        include:
+          - /var/log/pods/*/*/*.log
+        exclude:
+          # Skip the Collector's own logs to avoid a feedback loop.
+          - /var/log/pods/observability_otel-telemetry*/*/*.log
+          # Skip Loki's logs for the same reason.
+          - /var/log/pods/observability_loki*/*/*.log
+        start_at: end
+        include_file_path: true
+        operators:
+          # ------------------------------------------------------
+          # CRI / containerd / docker envelope.
+          #
+          # Strips the "<ts> stdout F " prefix so that body holds
+          # the raw application log line only.
+          #
+          # Also derives Kubernetes metadata from the file path
+          # /var/log/pods/<ns>_<pod>_<uid>/<container>/<restart>.log
+          # into RESOURCE attributes (not log attributes) using
+          # semconv names:
+          #
+          #   k8s.namespace.name
+          #   k8s.pod.name
+          #   k8s.pod.uid
+          #   k8s.container.name
+          #   k8s.container.restart_count
+          #
+          # The k8sattributes processor needs exactly these resource
+          # attributes to look the pod up — without them it logs
+          # "no pod identifier found" and enriches nothing.
+          #
+          # It additionally recombines multi-line entries that CRI
+          # split into chunks (logtag: P), so stack traces stay intact.
+          # ------------------------------------------------------
+          - type: container
+            id: container_parser
+            add_metadata_from_filepath: true
+
+          # ------------------------------------------------------
+          # JSON payload -> log attributes.
+          #
+          # parse_to must be attributes, not body: the fields become
+          # structured metadata in Loki, while body is replaced with
+          # the human-readable message a few operators below.
+          # ------------------------------------------------------
+          - type: json_parser
+            id: json_parser_body
+            if: 'body matches "^\\s*[{]"'
+            parse_from: body
+            parse_to: attributes
+            on_error: send_quiet
+
+          # ------------------------------------------------------
+          # Severity from the "level" field (zap, logrus, slog).
+          # ------------------------------------------------------
+          - type: severity_parser
+            parse_from: attributes.level
+            if: 'attributes["level"] != nil'
+            on_error: send_quiet
+            mapping:
+              fatal:
+                - panic
+                - dpanic
+              warn:
+                - warning
+          - type: move
+            if: 'attributes["mdc"]["traceId"] != nil'
+            from: attributes["mdc"]["traceId"]
+            to: attributes["trace_id"]
+
+          - type: move
+            if: 'attributes["mdc"]["spanId"] != nil'
+            from: attributes["mdc"]["spanId"]
+            to: attributes["span_id"]
+          # ------------------------------------------------------
+          # body <- msg, so Grafana's Line column shows the message
+          # instead of the whole JSON document.
+          # ------------------------------------------------------
+          - type: move
+            if: 'attributes["msg"] != nil'
+            from: attributes.msg
+            to: body
+          - type: move
+            if: 'attributes["message"] != nil'
+            from: attributes.message
+            to: body
+
+          # ------------------------------------------------------
+          # Trace context from the log payload.
+          #
+          # Promotes trace_id / span_id onto the LogRecord itself,
+          # which Loki then stores as structured metadata. This is
+          # what makes the Loki -> Tempo derived field in Grafana
+          # work for applications that log their trace context.
+          # ------------------------------------------------------
+          - type: trace_parser
+            if: 'attributes["trace_id"] != nil'
+            on_error: send_quiet
+            trace_id:
+              parse_from: attributes.trace_id
+            span_id:
+              parse_from: attributes.span_id
+          - type: trace_parser
+            if: 'attributes["traceId"] != nil'
+            on_error: send_quiet
+            trace_id:
+              parse_from: attributes.traceId
+            span_id:
+              parse_from: attributes.spanId
+    # ============================================================
+    # PROCESSORS
+    # ============================================================
+    processors:
+      # ----------------------------------------------------------
+      # Memory protection
+      # ----------------------------------------------------------
+      memory_limiter:
+        check_interval: 1s
+        limit_percentage: 75
+        spike_limit_percentage: 15
+
+      # ----------------------------------------------------------
+      # Kubernetes metadata
+      # ----------------------------------------------------------
+      k8s_attributes:
+        auth_type: serviceAccount
+        passthrough: false
+
+        # How to identify the pod a record belongs to.
+        # Order matters — the first match wins.
+        #
+        # Logs from file_log match on uid or name+namespace (both set
+        # by the container operator above); OTLP traces have no such
+        # attributes and fall back to the source IP of the connection.
+        #
+        # Note: no filter.node_from_env_var here on purpose. The
+        # Collector is a DaemonSet behind a single Service, so OTLP
+        # traffic may land on a node other than the sender's, and a
+        # node-scoped pod cache would silently stop enriching traces.
+        pod_association:
+          - sources:
+              - from: resource_attribute
+                name: k8s.pod.uid
+          - sources:
+              - from: resource_attribute
+                name: k8s.pod.name
+              - from: resource_attribute
+                name: k8s.namespace.name
+          - sources:
+              - from: connection
+
+        extract:
+          metadata:
+            - k8s.pod.name
+            - k8s.pod.uid
+            - k8s.namespace.name
+            - k8s.container.name
+            - k8s.node.name
+            - k8s.deployment.name
+
+          labels:
+            # --- Standard Kubernetes labels ---
+            # component is more specific than name: every Knative pod
+            # carries name == "knative-eventing" / "knative-serving",
+            # while component == "kafka-controller", "activator", ...
+            - tag_name: app.kubernetes.io/component
+              key: app.kubernetes.io/component
+            - tag_name: app.kubernetes.io/name
+              key: app.kubernetes.io/name
+            - tag_name: app
+              key: app
+
+            # --- Knative Serving ---
+            - tag_name: knative.dev/service
+              key: serving.knative.dev/service
+            - tag_name: knative.dev/revision
+              key: serving.knative.dev/revision
+
+            # --- Knative Eventing ---
+            - tag_name: eventing.knative.dev/broker
+              key: eventing.knative.dev/broker
+            - tag_name: eventing.knative.dev/trigger
+              key: eventing.knative.dev/trigger
+
+      # ----------------------------------------------------------
+      # Derive service.name, most specific source first:
+      #
+      #   1. knative.dev/service          user-facing Knative services
+      #   2. app.kubernetes.io/component
+      #   3. app
+      #   4. app.kubernetes.io/name
+      #   5. k8s.deployment.name
+      #   6. k8s.container.name
+      #   7. "unknown"
+      #
+      # Without this Loki falls back to "unknown_service" for every
+      # stream, because container logs carry no service.name at all.
+      # ----------------------------------------------------------
+      transform/service_name:
+        error_mode: ignore
+        log_statements:
+          - context: resource
+            statements:
+              # Knative
+              - set(
+                attributes["service.name"],
+                attributes["knative.dev/service"]
+                )
+                where attributes["knative.dev/service"] != nil
+
+              # Standard Kubernetes
+              - set(
+                attributes["service.name"],
+                attributes["app.kubernetes.io/component"]
+                )
+                where attributes["service.name"] == nil
+                and attributes["app.kubernetes.io/component"] != nil
+
+              # Legacy Kubernetes
+              - set(
+                attributes["service.name"],
+                attributes["app"]
+                )
+                where attributes["service.name"] == nil
+                and attributes["app"] != nil
+
+              # Chart / operator name
+              - set(
+                attributes["service.name"],
+                attributes["app.kubernetes.io/name"]
+                )
+                where attributes["service.name"] == nil
+                and attributes["app.kubernetes.io/name"] != nil
+
+              # Workload
+              - set(
+                attributes["service.name"],
+                attributes["k8s.deployment.name"]
+                )
+                where attributes["service.name"] == nil
+                and attributes["k8s.deployment.name"] != nil
+
+              # Container
+              - set(
+                attributes["service.name"],
+                attributes["k8s.container.name"]
+                )
+                where attributes["service.name"] == nil
+
+              # Last resort — reached when k8sattributes could not
+              # resolve the pod, e.g. it was already deleted.
+              - set(
+                attributes["service.name"],
+                "unknown"
+                )
+                where attributes["service.name"] == nil
+
+              # service.namespace is an index label on the Loki side.
+              - set(
+                attributes["service.namespace"],
+                attributes["k8s.namespace.name"]
+                )
+                where attributes["service.namespace"] == nil
+                and attributes["k8s.namespace.name"] != nil
+
+      # ----------------------------------------------------------
+      # Batch
+      # ----------------------------------------------------------
+      batch:
+        send_batch_size: 8192
+        timeout: 5s
+
+    # ============================================================
+    # EXPORTERS
+    # ============================================================
+    exporters:
+      # Loki, via its native OTLP endpoint.
+      otlp_http:
+        endpoint: "http://loki.observability.svc.cluster.local:3100/otlp"
+
+      # Tempo.
+      otlp/tempo:
+        endpoint: "tempo.observability.svc.cluster.local:4317"
+        tls:
+          insecure: true
+
+      # Prometheus.
+      prometheus_remote_write:
+        endpoint: "http://prometheus-server.observability.svc.cluster.local/api/v1/write"
+        tls:
+          insecure: true
+
+    # ============================================================
+    # SERVICE
+    # ============================================================
+    service:
+      telemetry:
+        logs:
+          # debug produces ~100 KB of output per Collector pod within
+          # a couple of minutes. Turn it on only while troubleshooting.
+          level: info
+
+      pipelines:
+        # --- Traces ---
+        # k8s_attributes is what attaches k8s.pod.name / k8s.namespace.name
+        # to spans; Grafana's Tempo -> Loki correlation is built on them.
+        traces:
+          receivers:
+            - otlp
+          processors:
+            - memory_limiter
+            - k8s_attributes
+            - batch
+          exporters:
+            - otlp/tempo
+
+        # --- Logs ---
+        logs:
+          receivers:
+            - file_log
+          processors:
+            - memory_limiter
+            - k8s_attributes
+            - transform/service_name
+            - batch
+          exporters:
+            - otlp_http
+
+        # --- Metrics ---
+        metrics:
+          receivers:
+            - otlp
+          processors:
+            - memory_limiter
+            - batch
+          exporters:
+            - prometheus_remote_write

@@ -1,0 +1,32 @@
+apiVersion: networking.istio.io/v1alpha3
+kind: Gateway
+metadata:
+  name: grafana-gateway
+  namespace: observability
+spec:
+  selector:
+    istio: knative-istio-gateway # Убедитесь, что селектор совпадает с вашим Istio Ingress Pod
+  servers:
+    - port:
+        number: 80
+        name: http
+        protocol: HTTP
+      hosts:
+        - "grafana.kn.local"
+---
+apiVersion: networking.istio.io/v1alpha3
+kind: VirtualService
+metadata:
+  name: grafana-virtualservice
+  namespace: observability
+spec:
+  hosts:
+    - "grafana.kn.local"
+  gateways:
+    - grafana-gateway
+  http:
+    - route:
+      - destination:
+          host: grafana.observability.svc.cluster.local
+          port:
+            number: 80
