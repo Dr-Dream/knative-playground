@@ -295,6 +295,3 @@ That's it.
 Follow guides from [here](https://camel.apache.org/camel-k/2.10.x/index.html).
 
 # Have fun!
-```shell
-k3d cluster edit knative --port-add "5435:5435/tcp@loadbalancer"
-```
