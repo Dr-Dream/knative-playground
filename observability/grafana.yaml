@@ -1,0 +1,137 @@
+# ВАЖНО про $$ в этом файле:
+# Grafana при чтении provisioning-файлов раскрывает $VAR и ${VAR}
+# как переменные окружения. Чтобы до Grafana дошёл литеральный
+# ${__value.raw} / $__tags, в YAML пишем $$ вместо $.
+
+datasources:
+  datasources.yaml:
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        uid: prometheus
+        type: prometheus
+        url: http://prometheus-server
+        isDefault: true
+        jsonData:
+          httpMethod: POST
+
+          # metrics -> traces.
+          # Tempo metrics-generator прикладывает к span metrics
+          # exemplar'ы с меткой traceID (именно так, camelCase —
+          # не trace_id). Требует у Prometheus
+          # --enable-feature=exemplar-storage (см. prometheus.yaml),
+          # иначе exemplar'ы отбрасываются на приёме.
+          exemplarTraceIdDestinations:
+            - name: traceID
+              datasourceUid: tempo
+              urlDisplayLabel: 'Open trace'
+
+      - name: Loki
+        uid: loki
+        type: loki
+        url: http://loki-gateway
+        jsonData:
+          # logs -> traces
+          derivedFields:
+            # 1. Основной путь: trace_id лежит в structured metadata.
+            #    Его выставляет trace_parser в коллекторе, если
+            #    приложение пишет trace_id в JSON-лог.
+            #    matcherType: label умеет искать по structured metadata,
+            #    в отличие от регулярки по тексту строки.
+            - name: TraceID
+              datasourceUid: tempo
+              matcherType: label
+              matcherRegex: 'trace_id'
+              url: '$${__value.raw}'
+              urlDisplayLabel: 'Open trace'
+
+            # 2. Fallback для plain-text логов, где trace id только
+            #    внутри самой строки.
+            - name: TraceIDInText
+              datasourceUid: tempo
+              matcherType: regex
+              matcherRegex: '(?:trace[_-]?id|traceID|traceId)["=:\s]+([0-9a-f]{32})'
+              url: '$${__value.raw}'
+              urlDisplayLabel: 'Open trace'
+
+      - name: Tempo
+        uid: tempo
+        type: tempo
+        url: http://tempo:3200
+        jsonData:
+          httpMethod: GET
+
+          # Требует tempo.streamOverHttpEnabled=true (см. tempo.yaml)
+          streamingEnabled:
+            search: true
+            metrics: true
+
+          nodeGraph:
+            enabled: true
+
+          serviceMap:
+            datasourceUid: prometheus
+
+          # ------------------------------------------------------
+          # traces -> logs
+          #
+          # Корреляция идёт по поду, а НЕ по trace id и НЕ по
+          # service.name. Почему:
+          #
+          # * компоненты Knative не пишут trace_id в свои логи,
+          #   поэтому filterByTraceID дал бы пустой результат;
+          #
+          # * service.name в трейсах приходит из OTel SDK самого
+          #   приложения ("webhook"), а в логах вычисляется
+          #   коллектором из меток пода ("eventing-webhook") —
+          #   значения совпадают не всегда;
+          #
+          # * k8s.pod.name / k8s.namespace.name есть и в спанах
+          #   (их навешивает k8sattributes), и в логах, и совпадают
+          #   они всегда.
+          #
+          # k8s.pod.name должен быть index label в Loki — см. loki.yaml.
+          # ------------------------------------------------------
+          tracesToLogsV2:
+            datasourceUid: loki
+            spanStartTimeShift: '-2m'
+            spanEndTimeShift: '2m'
+            filterByTraceID: true
+            filterBySpanID: true
+            tags:
+              - key: 'k8s.pod.name'
+                value: 'k8s_pod_name'
+              - key: 'k8s.namespace.name'
+                value: 'k8s_namespace_name'
+
+          # ------------------------------------------------------
+          # traces -> metrics
+          #
+          # Метка у span metrics называется service (не service_name
+          # и не service.name) — так их пишет metrics-generator Tempo.
+          # ------------------------------------------------------
+          tracesToMetrics:
+            datasourceUid: prometheus
+            spanStartTimeShift: '-2m'
+            spanEndTimeShift: '2m'
+            tags:
+              - key: 'service.name'
+                value: 'service'
+            queries:
+              - name: 'Request rate'
+                query: 'sum by (span_name) (rate(traces_spanmetrics_calls_total{$$__tags}[$$__rate_interval]))'
+              - name: 'Error rate'
+                query: 'sum by (span_name) (rate(traces_spanmetrics_calls_total{$$__tags, status_code="STATUS_CODE_ERROR"}[$$__rate_interval]))'
+              - name: 'Latency p95'
+                query: 'histogram_quantile(0.95, sum by (le, span_name) (rate(traces_spanmetrics_latency_bucket{$$__tags}[$$__rate_interval])))'
+
+          # Ширина полосы длительности в waterfall-виде трейса
+          spanBar:
+            type: 'Duration'
+
+          # Расширяет окно поиска при переходе из спана в другие
+          # источники — у спана нулевая длительность окна.
+          traceQuery:
+            timeShiftEnabled: true
+            spanStartTimeShift: '-2m'
+            spanEndTimeShift: '2m'

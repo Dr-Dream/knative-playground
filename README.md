@@ -46,6 +46,7 @@ It include:
 - Kubernetes cluster (k3d cluster + k3d local registry)
 - Cert/trust managers
 - istio (mesh is way to connect services in knative)
+- LGMT + Opentelemetry Collector (for traces and logs)
 - Strimzi (Kafka operator)
 - Kafka-UI
 - Single instance of kafka broker
@@ -100,6 +101,51 @@ Istio Ingress Gateway
 ```shell
 helm upgrade --install knative-istio-gateway istio/gateway -n istio-gateway --create-namespace --wait
 ```
+
+### LGMT + Opentelemetry Collector
+Repositories:
+```shell
+helm repo add opentelemetry https://open-telemetry.github.io/opentelemetry-helm-charts
+helm repo add grafana-community https://grafana-community.github.io/helm-charts
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm repo update
+```
+Prometheus:
+```shell
+helm upgrade --install -n observability --create-namespace prometheus prometheus-community/prometheus -f ./observability/prometheus.yaml
+```
+Loki:
+```shell
+helm upgrade --install -n observability --create-namespace loki grafana-community/loki -f ./observability/loki.yaml
+```
+Tempo:
+```shell
+helm upgrade --install -n observability --create-namespace tempo grafana-community/tempo -f ./observability/tempo.yaml
+```
+Grafana:
+```shell
+helm upgrade --install -n observability --create-namespace grafana grafana-community/grafana -f ./observability/grafana.yaml
+```
+Opentelemetry Operator
+```shell
+helm upgrade --install -n observability --create-namespace opentelemetry-operator opentelemetry/opentelemetry-operator
+```
+Opentelemetry Collector:
+```shell
+kubectl -n observability apply -f ./observability/collector.yaml
+```
+Grafana Istio Gateway (http://grafana.kn.local:8888)
+```shell
+kubectl -n observability apply -f ./observability/grafana-istio.yaml
+```
+> just add 127.0.0.1 grafana.kn.local to /etc/hosts
+> then http://grafana.kn.local:8888
+
+To get grafana admin password:
+```shell
+kubectl -n observability get secret grafana -o jsonpath="{.data.admin-password}" | base64 --decode ; echo
+```
+
 
 ### Strimzi Kafka + Kafka UI + Broker
 Strimzi Operator:
@@ -249,3 +295,6 @@ That's it.
 Follow guides from [here](https://camel.apache.org/camel-k/2.10.x/index.html).
 
 # Have fun!
+```shell
+k3d cluster edit knative --port-add "5435:5435/tcp@loadbalancer"
+```

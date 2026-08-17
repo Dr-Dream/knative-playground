@@ -1,0 +1,67 @@
+replicas: 1
+
+tempo:
+  reportingEnabled: false
+  streamOverHttpEnabled: true
+  metricsGenerator:
+    enabled: true
+    remoteWriteUrl: "http://prometheus-server/api/v1/write"
+    processor:
+      service_graphs:
+        wait: 10s
+        max_items: 10000
+      span_metrics:
+        dimensions:
+          - k8s.namespace.name
+        enable_target_info: true
+      local_blocks:
+        flush_to_storage: true
+
+    # WAL metrics-generator
+    storage:
+      path: /var/tempo/metrics
+
+    # WAL traces
+    traces_storage:
+      path: /var/tempo/traces-wal
+
+  overrides:
+    defaults:
+      metrics_generator:
+        processors:
+          - service-graphs
+          - span-metrics
+          - local-blocks
+
+      ingestion:
+        rate_limit_bytes: 5000000
+        burst_size_bytes: 10000000
+        max_traces_per_user: 20000
+
+      global:
+        max_bytes_per_trace: 5000000
+
+  retention: 24h
+
+  storage:
+    trace:
+      backend: local
+      local:
+        path: /var/tempo/traces
+      wal:
+        path: /var/tempo/wal
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: "0.0.0.0:4317"
+        http:
+          endpoint: "0.0.0.0:4318"
+
+persistence:
+  enabled: true
+  storageClassName: local-path
+  accessModes:
+    - ReadWriteOnce
+  size: 10Gi
+
