@@ -212,11 +212,16 @@ kubectl apply -f knative/serving.yaml
 ```
 ### Knative Eventing
 Eventing control plane with IM, MT and Kafka channels and brokers support (Kafka - default)
+Cross-namespace subscriptions enabled.
 ```shell
 kubectl create namespace knative-eventing
 kubectl label namespace knative-eventing istio-injection=enabled
 kubectl apply -f knative/eventing.yaml
 ```
+> **!!!WARNING!!!** 
+> Check tail of knative/eventing.yaml there are ClusterRore and ClusterRoleBinding foe knsubscribe for all namespaces
+> For Security reasons try to avoid it in production and use namespaces Role and RoleBinding as described in the end of 
+> file.
 
 If everything is ok, we are ready for simple serverless and CloudEvents (CNCF compatible)
 

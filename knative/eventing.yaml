@@ -39,3 +39,74 @@ spec:
       bootstrap.servers: "knative-kafka-bootstrap.kafka.svc.cluster.local:9092"
     kafka-channel-config:
       bootstrap.servers: "knative-kafka-bootstrap.kafka.svc.cluster.local:9092"
+---
+####!!!!!!!!! BE AWARE OF SECURITY CONSIDIRATIONS IN PROD
+### ITS BETTER TO USE NAMESPACE SCOPES (Comments follow)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: knative-eventing-cross-namespace
+rules:
+  - apiGroups:
+      - eventing.knative.dev
+    resources:
+      - brokers
+    verbs:
+      - knsubscribe
+
+  - apiGroups:
+      - messaging.knative.dev
+    resources:
+      - kafkachannels
+    verbs:
+      - knsubscribe
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: knative-eventing-cross-namespace
+subjects:
+  - kind: ServiceAccount
+    name: eventing-controller
+    namespace: knative-eventing
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: knative-eventing-cross-namespace
+
+
+#---
+#apiVersion: rbac.authorization.k8s.io/v1
+#kind: Role
+#metadata:
+#  name: knative-eventing-cross-namespace
+#  namespace: vzhukh
+#rules:
+#  - apiGroups:
+#      - eventing.knative.dev
+#    resources:
+#      - brokers
+#    verbs:
+#      - knsubscribe
+#  - apiGroups:
+#      - messaging.knative.dev
+#    resources:
+#      - kafkachannels
+#    verbs:
+#      - knsubscribe
+#
+#---
+#apiVersion: rbac.authorization.k8s.io/v1
+#kind: RoleBinding
+#metadata:
+#  name: knative-eventing-cross-namespace
+#  namespace: vzhukh
+#subjects:
+#  - kind: ServiceAccount
+#    name: eventing-controller
+#    namespace: knative-eventing
+#roleRef:
+#  apiGroup: rbac.authorization.k8s.io
+#  kind: Role
+#  name: knative-eventing-cross-namespace
